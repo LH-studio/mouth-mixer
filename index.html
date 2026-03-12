@@ -978,6 +978,7 @@ function renderComposer(){
   h+='<div class="comp-master-wave" id="comp-master-wave"><canvas id="comp-master-cv"></canvas></div>';
   // Controls row
   h+='<div class="comp-controls">';
+  h+=`<button class="comp-btn" onclick="comp.playhead=0;if(comp.playing)compStopPlay();compUpdatePlayheads();compDrawMasterWave()">⏮</button>`;
   h+=`<button class="comp-btn ${comp.playing?'acc':''}" onclick="compTogglePlay()">${comp.playing?'■ Pause':'▶ Play'}</button>`;
   h+=`<div class="comp-bpm"><button class="comp-bpm" onclick="compSetBpm(-1)">−</button>`;
   h+=`<input id="comp-bpm-inp" type="number" value="${comp.bpm}" onchange="compSetBpmVal(this.value)" min="60" max="200">`;
