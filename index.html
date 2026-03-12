@@ -138,6 +138,21 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
 }
 .icon-btn.danger{color:var(--danger)}
 
+/* Sticky Player */
+.sticky-player{flex-shrink:0;padding:0 24px;background:var(--bg);position:relative;z-index:10}
+.sticky-player:empty{display:none}
+.sp-wave{height:56px;border-radius:12px;background:var(--bg2);margin-bottom:10px;overflow:hidden;position:relative}
+.sp-wave .wave-bars{height:100%;padding:0 12px}
+.sp-row{display:flex;gap:8px;align-items:center;margin-bottom:12px}
+.sp-play{
+  width:40px;height:40px;border-radius:20px;border:none;background:var(--t1);color:var(--bg);
+  font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  font-family:var(--font);transition:all .15s;
+}
+.sp-play:active{transform:scale(.93)}
+.sp-time{font-size:10px;color:var(--t3);letter-spacing:1px;font-variant-numeric:tabular-nums}
+.sp-name{font-size:11px;color:var(--t1);font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 /* Footer */
 .footer{padding:24px;text-align:center;font-size:8px;color:var(--t5);letter-spacing:3px;flex-shrink:0}
 </style>
@@ -148,6 +163,7 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;bac
     <div class="hdr-sub">Mouth</div>
     <div class="hdr-title">Mixer</div>
   </div>
+  <div id="sticky-player" class="sticky-player"></div>
   <div class="tabs">
     <button class="tab on" id="tab-mixer" onclick="switchTab('mixer')">Mixer</button>
     <button class="tab" id="tab-lib" onclick="switchTab('lib')">Library · <span id="lib-count">0</span></button>
@@ -485,58 +501,61 @@ function stopPlayback(){
   cancelAnimationFrame(playAnim);cancelAnimationFrame(visAnim);
 }
 
-function playWithFx(){
+async function playWithFx(){
   if(!currentBuf)return;stopPlayback();
-  const ctx=getCtx();
-  // Force resume synchronously in click handler for iOS
-  ctx.resume();
   const rate=currentFx.spezial.type==='Pitch Shifter'?.5+currentFx.spezial.value*1.5:1;
   const hasEffects=Object.values(currentFx).some(e=>e.type!=='None');
 
-  // If no effects and we have WAV data, use HTML5 Audio as reliable fallback (especially iOS)
-  if(!hasEffects&&currentB64){
-    try{
-      const audio=new Audio('data:audio/wav;base64,'+currentB64);
-      audio.playbackRate=rate;
-      audio.play().then(()=>{
-        isPlaying=true;renderPlayBtn();
-        audio.onended=()=>{isPlaying=false;renderPlayBtn()};
-      }).catch(()=>{
-        // Fallback failed, try Web Audio
-        playViaWebAudio(ctx,rate);
-      });
-      sourceNode={stop:()=>{audio.pause();audio.currentTime=0}};
-      return;
-    }catch(e){}
-  }
-  playViaWebAudio(ctx,rate);
-}
+  isPlaying=true;renderPlayBtn();
 
-function playViaWebAudio(ctx,rate){
-  const src=ctx.createBufferSource();src.buffer=currentBuf;src.playbackRate.value=rate;
-  const{nodes,lfos}=buildChain(ctx,currentFx);lfoNodes=lfos;
-  nodes.length>0?connectChain(src,nodes,ctx.destination):src.connect(ctx.destination);
-  ctx.resume();src.start();sourceNode=src;isPlaying=true;playStart=ctx.currentTime;
-  const dur=currentBuf.duration/rate;
-  const upd=()=>{
-    const e=ctx.currentTime-playStart,p=Math.min(e/dur,1);
-    // Update waveform highlights
-    const bars=document.querySelectorAll('.wave-bar');
-    bars.forEach((b,i)=>{b.classList.toggle('lit',i/bars.length<=p)});
-    const head=document.getElementById('wave-head');if(head)head.style.left=(p*100)+'%';
-    if(e<dur){playAnim=requestAnimationFrame(upd)}
-    else{isPlaying=false;bars.forEach(b=>b.classList.remove('lit'));if(head)head.style.left='0';renderPlayBtn()}
-  };
-  playAnim=requestAnimationFrame(upd);
-  src.onended=()=>{isPlaying=false;cancelAnimationFrame(playAnim);
-    document.querySelectorAll('.wave-bar').forEach(b=>b.classList.remove('lit'));
-    const head=document.getElementById('wave-head');if(head)head.style.left='0';renderPlayBtn()};
-  renderPlayBtn();
+  try{
+    let wavB64=currentB64;
+
+    // If effects are active, render offline first
+    if(hasEffects){
+      const offCtx=new OfflineAudioContext(1,Math.ceil(currentBuf.length/rate),currentBuf.sampleRate);
+      const src=offCtx.createBufferSource();src.buffer=currentBuf;src.playbackRate.value=rate;
+      const{nodes}=buildChain(offCtx,currentFx);
+      nodes.length>0?connectChain(src,nodes,offCtx.destination):src.connect(offCtx.destination);
+      src.start();
+      const rendered=await offCtx.startRendering();
+      wavB64=ab2b64(encodeWAV(rendered));
+    }
+
+    // Play via HTML5 Audio (reliable on all platforms including iOS)
+    const audio=new Audio('data:audio/wav;base64,'+wavB64);
+    if(!hasEffects)audio.playbackRate=rate;
+    await audio.play();
+    sourceNode={stop:()=>{audio.pause();audio.currentTime=0}};
+
+    // Waveform progress
+    const dur=audio.duration||currentBuf.duration/rate;
+    const startT=performance.now();
+    const upd=()=>{
+      const elapsed=(performance.now()-startT)/1000;
+      const p=Math.min(elapsed/dur,1);
+      const bars=document.querySelectorAll('.wave-bar');
+      bars.forEach((b,i)=>{b.classList.toggle('lit',i/bars.length<=p)});
+      const head=document.getElementById('wave-head');if(head)head.style.left=(p*100)+'%';
+      if(p<1)playAnim=requestAnimationFrame(upd);
+    };
+    playAnim=requestAnimationFrame(upd);
+
+    audio.onended=()=>{
+      isPlaying=false;sourceNode=null;cancelAnimationFrame(playAnim);
+      document.querySelectorAll('.wave-bar').forEach(b=>b.classList.remove('lit'));
+      const head=document.getElementById('wave-head');if(head)head.style.left='0';
+      renderStickyPlayer();
+    };
+  }catch(e){
+    console.error('Playback error:',e);
+    isPlaying=false;renderStickyPlayer();
+  }
 }
 
 function renderPlayBtn(){
   const b=document.getElementById('play-btn');
-  if(b)b.innerHTML=isPlaying?'■ &nbsp;Stop':'▶ &nbsp;Play with effects';
+  if(b){b.innerHTML=isPlaying?'■':'▶';b.onclick=isPlaying?function(){stopPlayback();renderStickyPlayer()}:playWithFx}
 }
 
 /* ═══════════════════════════════════════
@@ -595,30 +614,30 @@ async function downloadSequence(id){
 
 async function playFromLib(id){
   const seq=sequences.find(s=>s.id===id);if(!seq)return;
-  const ctx=getCtx();ctx.resume();
+  stopPlayback();
   const b64=await dbGet(id);if(!b64)return;
   const hasEffects=Object.values(seq.effects||{}).some(e=>e.type!=='None');
   const rate=seq.effects?.spezial?.type==='Pitch Shifter'?.5+seq.effects.spezial.value*1.5:1;
 
-  // No effects: use HTML5 Audio (reliable on iOS)
-  if(!hasEffects){
-    try{
-      stopPlayback();
-      const audio=new Audio('data:audio/wav;base64,'+b64);
-      audio.playbackRate=rate;
-      await audio.play();
-      sourceNode={stop:()=>{audio.pause();audio.currentTime=0}};
-      audio.onended=()=>{sourceNode=null};
-      return;
-    }catch(e){}
-  }
-
-  const buf=await ctx.decodeAudioData(b642ab(b64).slice(0));
-  stopPlayback();
-  const src=ctx.createBufferSource();src.buffer=buf;src.playbackRate.value=rate;
-  const{nodes,lfos}=buildChain(ctx,seq.effects||defaultFx());lfoNodes=lfos;
-  nodes.length>0?connectChain(src,nodes,ctx.destination):src.connect(ctx.destination);
-  ctx.resume();src.start();sourceNode=src;src.onended=()=>{sourceNode=null};
+  try{
+    let wavB64=b64;
+    if(hasEffects){
+      const ctx=getCtx();
+      const buf=await ctx.decodeAudioData(b642ab(b64).slice(0));
+      const offCtx=new OfflineAudioContext(1,Math.ceil(buf.length/rate),buf.sampleRate);
+      const src=offCtx.createBufferSource();src.buffer=buf;src.playbackRate.value=rate;
+      const{nodes}=buildChain(offCtx,seq.effects||defaultFx());
+      nodes.length>0?connectChain(src,nodes,offCtx.destination):src.connect(offCtx.destination);
+      src.start();
+      const rendered=await offCtx.startRendering();
+      wavB64=ab2b64(encodeWAV(rendered));
+    }
+    const audio=new Audio('data:audio/wav;base64,'+wavB64);
+    if(!hasEffects)audio.playbackRate=rate;
+    await audio.play();
+    sourceNode={stop:()=>{audio.pause();audio.currentTime=0}};
+    audio.onended=()=>{sourceNode=null};
+  }catch(e){console.error('Playback error:',e)}
 }
 
 /* ═══════════════════════════════════════
@@ -630,31 +649,54 @@ function switchTab(t){
   document.getElementById('tab-mixer').classList.toggle('on',t==='mixer');
   document.getElementById('tab-lib').classList.toggle('on',t==='lib');
   if(t==='mixer')renderMixer();else renderLib();
+  renderStickyPlayer();
+}
+
+function renderStickyPlayer(){
+  const el=document.getElementById('sticky-player');
+  const hasAudio=!!currentBuf;
+  const maxWf=Math.max(...currentWf,0.001);
+
+  if(!hasAudio&&!isRecording){el.innerHTML='';return}
+
+  let h='';
+
+  // Waveform
+  h+='<div class="sp-wave">';
+  if(isRecording){
+    h+='<canvas id="live-canvas" width="412" height="56" style="width:100%;height:100%;display:block"></canvas>';
+  }else if(currentWf.length>0){
+    h+='<div class="wave-bars" style="height:100%;padding:0 12px;gap:2px">';
+    currentWf.forEach((v)=>{
+      const pct=Math.max(4,(v/maxWf)*85);
+      h+=`<div class="wave-bar" style="height:${pct}%"></div>`;
+    });
+    h+='</div><div class="wave-head" id="wave-head"></div>';
+  }
+  h+='</div>';
+
+  // Play row (only if audio is loaded and not recording)
+  if(hasAudio&&!isRecording){
+    const editName=editId?sequences.find(s=>s.id===editId)?.name:'';
+    h+='<div class="sp-row">';
+    h+=`<button class="sp-play" id="play-btn" onclick="${isPlaying?'stopPlayback();renderStickyPlayer()':'playWithFx()'}">`;
+    h+=isPlaying?'■':'▶';
+    h+='</button>';
+    h+=`<span class="sp-name">${editName?escHtml(editName):'Unsaved recording'}</span>`;
+    h+=`<span class="sp-time">${currentBuf.duration.toFixed(1)}s</span>`;
+    h+='</div>';
+  }
+
+  el.innerHTML=h;
+  if(isRecording)setTimeout(startLiveVis,20);
 }
 
 function renderMixer(){
   const el=document.getElementById('view-mixer');
   const hasAudio=!!currentBuf;
-  const maxWf=Math.max(...currentWf,0.001);
   const activeFxCount=Object.values(currentFx).filter(e=>e.type!=='None').length;
 
   let h='';
-
-  // Waveform
-  h+='<div class="wave-box">';
-  if(isRecording){
-    h+='<canvas id="live-canvas" width="412" height="72"></canvas>';
-  }else if(currentWf.length>0){
-    h+='<div class="wave-bars">';
-    currentWf.forEach((v,i)=>{
-      const pct=Math.max(4,(v/maxWf)*85);
-      h+=`<div class="wave-bar" style="height:${pct}%"></div>`;
-    });
-    h+='</div><div class="wave-head" id="wave-head"></div>';
-  }else{
-    h+='<div class="wave-empty">READY</div>';
-  }
-  h+='</div>';
 
   // Record controls
   if(!hasAudio||isRecording){
@@ -671,11 +713,6 @@ function renderMixer(){
 
   // Audio loaded — show controls
   if(hasAudio&&!isRecording){
-    // Play
-    h+=`<button class="btn btn-outline" id="play-btn" onclick="${isPlaying?'stopPlayback();renderMixer()':'playWithFx()'}" style="margin-bottom:12px">`;
-    h+=isPlaying?'■ &nbsp;Stop':'▶ &nbsp;Play with effects';
-    h+='</button>';
-
     // Name
     h+=`<input class="input" id="seq-name" placeholder="Name this sequence…" maxlength="40" value="${editId?escHtml(sequences.find(s=>s.id===editId)?.name||''):''}" style="margin-bottom:8px">`;
 
@@ -720,16 +757,13 @@ function renderMixer(){
       }
       h+='</div>';
     });
-    // Reset
-    h+=`<div class="btn-row"><button class="btn btn-accent" onclick="${isPlaying?'stopPlayback();renderMixer()':'playWithFx()'}">${isPlaying?'■ &nbsp;Stop':'▶ &nbsp;Preview'}</button>`;
-    h+=`<button class="btn btn-ghost" onclick="resetFx()" style="flex:0 0 auto;width:auto;padding:14px 20px">Reset</button></div>`;
+    // Reset only
+    h+=`<button class="btn btn-ghost" onclick="resetFx()" style="margin-top:8px">Reset effects</button>`;
     h+='</div>';
   }
 
   el.innerHTML=h;
-
-  // Start live vis if recording
-  if(isRecording)setTimeout(startLiveVis,20);
+  renderStickyPlayer();
 }
 
 function renderLib(){
