@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mouth-mixer-v7';
+const CACHE_NAME = 'mouth-mixer-v9';
 const ASSETS = ['./index.html', './manifest.json', './icon-192.svg', './icon-512.svg'];
 
 self.addEventListener('install', e => {
