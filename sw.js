@@ -16,7 +16,6 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  if(!e.request.url.startsWith(self.location.origin)) return;
   e.respondWith(
     caches.match(e.request).then(r => r || fetch(e.request).catch(() => caches.match('./index.html')))
   );
