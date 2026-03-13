@@ -508,6 +508,7 @@ function connectChain(src,nodes,dest){
    ═══════════════════════════════════════ */
 async function startRecording(){
   try{
+   gae('record_tap');
     const ctx=await ensureCtx();
     const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
     streamRef=stream;
@@ -641,11 +642,13 @@ async function saveSequence(){
   const entry={id,name,effects:{...currentFx},createdAt:editId?sequences.find(s=>s.id===id)?.createdAt:Date.now(),updatedAt:Date.now()};
   if(editId){sequences=sequences.map(s=>s.id===id?entry:s)}else{sequences.push(entry)}
   saveSequences();
+ gae('sequence_saved');
   editId=null;currentBuf=null;currentB64=null;currentWf=[];currentFx=defaultFx();openCat=null;
   renderMixer();
 }
 
 async function loadSequence(id){
+ gae('library_edit');
   const seq=sequences.find(s=>s.id===id);if(!seq)return;
   const ctx=getCtx();
   const b64=await dbGet(id);if(!b64)return;
@@ -726,6 +729,8 @@ function switchTab(t){
   document.getElementById('tab-comp').classList.toggle('on',t==='comp');
   // Hide sticky player on composer
   document.getElementById('sticky-player').style.display=t==='comp'?'none':'';
+ if(t==='lib')gae('library_opened');
+if(t==='comp')gae('composer_opened');
   if(t==='mixer')renderMixer();else if(t==='lib')renderLib();else if(t==='comp')renderComposer();
   if(t!=='comp')renderStickyPlayer();
 }
@@ -1451,7 +1456,7 @@ let compAudio=null; // HTML5 Audio element
 
 async function compTogglePlay(){
   if(comp.playing){compStopPlay();return}
-
+gae('composer_play');
   // Find total duration
   let maxBeat=0;
   comp.tracks.forEach(tr=>tr.clips.forEach(cl=>{
